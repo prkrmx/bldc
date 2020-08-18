@@ -40,7 +40,7 @@ def argument_parser():
                       default="50008", help="Broadcast port [default=%default]")
     parser.add_option("-a", dest="addr", default="10.255.255.255",
                       help="Broadcast address [default=%default]")
-    parser.add_option("-s", dest="shift", type="int", default="2",
+    parser.add_option("-s", dest="shift", type="int", default="7",
                       help="Goto shift [default=%default]")
     parser.add_option("-v", "--verbose", action="store_true", default=False,
                       help="If set, verbose information is printed")
@@ -76,7 +76,6 @@ def sensors(options, position, speed):
     tach = reader(pi_enc, RPM_GPIO, 2125, 0.5, 0.5)
 
     prev_pos = -1
-    prev_rpm = -1
     try:
         while True:
             # Read RPM
@@ -85,7 +84,6 @@ def sensors(options, position, speed):
             #     print("RPM {:.2f}".format(rpm_f))
 
             # Read position
-            #! TODO: Fix encoder errors
             c, d = pi_enc.spi_read(encoder, 3)
             if c == 3:
                 # word = (d[0] << 8) | d[1]
@@ -96,18 +94,20 @@ def sensors(options, position, speed):
                 if ((word & 0x38) == 0x20) and ((word & 0x01) == bit_parity):
                     pos_i = round(pos_f)
                     rpm_i = round(rpm_f)
-                    if options.verbose:
-                        # print("RPM {:.2f}\t POS:{:.2f}\t{:b}".format(
-                        #     rpm_f, pos_f, word))
-                        print("RPM {:d}\t POS:{:d}\t{:b}".format(
-                            rpm_i, pos_i, word))
-                    if (prev_pos != pos_i) or (prev_rpm != rpm_i):
+                    # if options.verbose:
+                    #     print("RPM {:.2f}\t POS:{:.2f}\t{:b}".format(
+                    #         rpm_f, pos_f, word))
+                    # if prev_pos != pos_i:
+                    if pos_i > prev_pos:
+                        if pos_i == 360:
+                            pos_i = 0
                         prev_pos = pos_i
-                        prev_rpm = rpm_i
                         key = bytes([0xFF]) + rpm_i.to_bytes(1, 'big') + \
                             pos_i.to_bytes(2, 'big')
                         key += chks(key + bytes([0x00])).to_bytes(1, 'big')
                         bcast_sock.sendto(key, (options.addr, options.port))
+                        if options.verbose:
+                            print("RPM {:d}\t POS:{:d}\t{:b}".format(rpm_i, pos_i, word))
                     position.value = pos_i
                     speed.value = rpm_i
                 # else:
@@ -299,6 +299,8 @@ def main(options=None):
                                 pi.set_PWM_dutycycle(PWM, speed)
                                 sleep(1/acc)
                             logging.info("Stop rotator")
+                            speed = 0
+                            pi.set_PWM_dutycycle(PWM, speed)
                             logging.info("Enable safety break")
                             pi.write(BRAKE, 1)
                         else:
