@@ -14,14 +14,20 @@ from optparse import OptionParser
 from multiprocessing import Process, Value
 from read_RPM import reader
 
-RTTR_EN = 12
-
 
 def chks(data):
     chks = 0
     for index in range(1, len(data) - 1):
         chks += data[index]
     return chks % 256
+
+
+def parity(num):
+    result = 0
+    while num:
+        result ^= num & 1
+        num >>= 1
+    return result
 
 
 def argument_parser():
@@ -34,6 +40,8 @@ def argument_parser():
                       default="50008", help="Broadcast port [default=%default]")
     parser.add_option("-a", dest="addr", default="10.255.255.255",
                       help="Broadcast address [default=%default]")
+    parser.add_option("-s", dest="shift", type="int", default="2",
+                      help="Goto shift [default=%default]")
     parser.add_option("-v", "--verbose", action="store_true", default=False,
                       help="If set, verbose information is printed")
     parser.add_option("-k", "--kill", action="store_true",
@@ -61,37 +69,51 @@ def sensors(options, position, speed):
     pi_enc = pigpio.pi()
 
     logging.info("Open encoder SPI")
-    encoder = pi_enc.spi_open(0, 1000000, 1)
+    encoder = pi_enc.spi_open(0, 1000000, 3)
 
     RPM_GPIO = 6
     logging.info("Set up RPM reader: GPIO %d" % (RPM_GPIO))
     tach = reader(pi_enc, RPM_GPIO, 2125, 0.5, 0.5)
 
+    prev_pos = -1
+    prev_rpm = -1
     try:
         while True:
             # Read RPM
-            revolutions = tach.RPM()
+            rpm_f = tach.RPM()
             # if options.verbose:
-            #     print("RPM {:.2f}".format(revolutions))
-            speed.value = revolutions
+            #     print("RPM {:.2f}".format(rpm_f))
 
             # Read position
             #! TODO: Fix encoder errors
-            c, d = pi_enc.spi_read(encoder, 2)
-            if c == 2:
-                word = (d[0] << 8) | d[1]
-                ang_pos = (word >> 6)
-                if (word & 0x38) == 0x20:
+            c, d = pi_enc.spi_read(encoder, 3)
+            if c == 3:
+                # word = (d[0] << 8) | d[1]
+                word = ((d[0] << 16) | (d[1] << 8) | d[2]) >> 7
+                # print("{:b}".format(word))
+                pos_f = (word >> 6)*360/1024
+                bit_parity = parity(word >> 1)
+                if ((word & 0x38) == 0x20) and ((word & 0x01) == bit_parity):
+                    pos_i = round(pos_f)
+                    rpm_i = round(rpm_f)
                     if options.verbose:
-                        print("RPM {:.2f}\t POS:{:d}\t{:b}".format(
-                            revolutions, ang_pos, word))
-                    bcast_sock.sendto(ang_pos.to_bytes(2, 'big'),
-                                      (options.addr, options.port))
-                    position.value = ang_pos
-                else:
-                    if options.verbose:
-                        print("RPM {:.2f}\t POS:{:d}\t{:b} BAD READING!!!!".format(
-                            revolutions, ang_pos, word))
+                        # print("RPM {:.2f}\t POS:{:.2f}\t{:b}".format(
+                        #     rpm_f, pos_f, word))
+                        print("RPM {:d}\t POS:{:d}\t{:b}".format(
+                            rpm_i, pos_i, word))
+                    if (prev_pos != pos_i) or (prev_rpm != rpm_i):
+                        prev_pos = pos_i
+                        prev_rpm = rpm_i
+                        key = bytes([0xFF]) + rpm_i.to_bytes(1, 'big') + \
+                            pos_i.to_bytes(2, 'big')
+                        key += chks(key + bytes([0x00])).to_bytes(1, 'big')
+                        bcast_sock.sendto(key, (options.addr, options.port))
+                    position.value = pos_i
+                    speed.value = rpm_i
+                # else:
+                #     if options.verbose:
+                #         print("RPM {:.2f}\t POS:{:.2f}\t{:b} BAD READING!!!!".format(
+                #             rpm_f, pos_f, word))
 
             sleep(.002)
     except:
@@ -127,7 +149,7 @@ def main(options=None):
             exit(0)
 
         abs_poss = Value('i', 0)
-        abs_speed = Value('d', 0.0)
+        abs_speed = Value('i', 0)
         p = Process(target=sensors, args=(options, abs_poss, abs_speed))
         p.start()
 
@@ -153,140 +175,145 @@ def main(options=None):
         conn, addr = cmd_sock.accept()
 
         while True:
-            data = conn.recv(16)
-            if not data:
-                conn, addr = cmd_sock.accept()
+            try:
+                data = conn.recv(16)
+                if not data:
+                    conn, addr = cmd_sock.accept()
 
-            if len(data) > 7:
+                if len(data) > 7:
 
-                cksm = chks(data)
+                    cksm = chks(data)
 
-                fbk = bytearray(8)
-                fbk[0] = 0xFF
-                fbk[1] = data[1]
-                fbk[2] = data[2]
-                fbk[7] = chks(fbk)
-                conn.send(fbk)
+                    fbk = bytearray(8)
+                    fbk[0] = 0xFF
+                    fbk[1] = data[1]
+                    fbk[2] = data[2]
+                    fbk[7] = chks(fbk)
+                    conn.send(fbk)
 
-                if cksm == data[7]:
-                    cmd = (data[1] << 8) | data[2]
-                    # * Start
-                    if cmd == 0x0102:
-                        rpm = data[3]
-                        acc = data[4]
-                        spin = data[5]
+                    if cksm == data[7]:
+                        cmd = (data[1] << 8) | data[2]
+                        # * Start
+                        if cmd == 0x0102:
+                            rpm = data[3]
+                            acc = data[4]
+                            spin = data[5]
 
-                        log = "HOST:%s\tCMD:Start\tRPM:%d\tACC:%d\tDIR:%s" % (
-                            addr[0], rpm, acc, "CW" if spin else "CCW")
-                        logging.info(log)
-                        if options.verbose:
-                            print(log)
+                            log = "HOST:%s\tCMD:Start\tRPM:%d\tACC:%d\tDIR:%s" % (
+                                addr[0], rpm, acc, "CW" if spin else "CCW")
+                            logging.info(log)
+                            if options.verbose:
+                                print(log)
 
-                        if pi.read(BRAKE):
-                            logging.info("Disable safety break")
-                            pi.write(BRAKE, 0)
+                            if pi.read(BRAKE):
+                                logging.info("Disable safety break")
+                                pi.write(BRAKE, 0)
 
-                        logging.info("Setting direction")
-                        pi.write(DIR, spin)
+                            logging.info("Setting direction")
+                            pi.write(DIR, spin)
 
-                        max_speed = int(rpm*23.18)
-                        logging.info(
-                            "Setting speed to %d. Start rotator" % (max_speed))
-                        while speed < max_speed:
-                            pi.set_PWM_dutycycle(PWM, speed)
-                            speed += 5
-                            sleep(1/acc)
-                    # * GoTo
-                    elif cmd == 0x0408:
-                        rpm = data[3]
-                        acc = data[4]
-                        pos = (data[5] << 8) | data[6]
-                        log = "HOST:%s\tCMD:GoTo\tRPM:%d\tACC:%d\tPOS:%d" % (
-                            addr[0], rpm, acc, pos)
-                        logging.info(log)
-                        if options.verbose:
-                            print(log)
-
-                        if pi.read(BRAKE):
-                            logging.info("Disable safety break")
-                            pi.write(BRAKE, 0)
-
-                        logging.info("Setting speed to 2.5 RPM. Start rotator")
-                        while True:
-                            if (speed > 70):
-                                speed -= 5
-                            elif (speed < 65):
-                                speed += 5
-                            else:
-                                break
-                            pi.set_PWM_dutycycle(PWM, speed)
-                            sleep(.1)
-
-                        logging.info("Waiting for the required position")
-                        while (pos-25) % 1024 != int(abs_poss.value):
-                            sleep(.001)
-
-                        logging.info("Stop rotator")
-                        while speed > 0:
-                            speed -= 5
-                            pi.set_PWM_dutycycle(PWM, speed)
-                            sleep(.1)
-                        logging.info("Enable safety break")
-                        pi.write(BRAKE, 1)
-                    # * Update
-                    elif cmd == 0x0810:
-                        rpm = data[3]
-                        acc = data[4]
-                        log = "HOST:%s\tCMD:Update\tRPM:%d" % (addr[0], rpm)
-                        logging.info(log)
-                        if options.verbose:
-                            print(log)
-
-                        if pi.read(BRAKE):
-                            logging.info(
-                                "The rotator does not move! Nothing to do")
-                        else:
                             max_speed = int(rpm*23.18)
-                            if max_speed > speed:
-                                logging.info(
-                                    "Increase speed to %d." % (max_speed))
-                                while speed < max_speed:
-                                    pi.set_PWM_dutycycle(PWM, speed)
-                                    speed += 5
-                                    sleep(0.1)
-                            else:
-                                logging.info(
-                                    "Reducing speed to %d." % (max_speed))
-                                while speed > max_speed:
+                            logging.info(
+                                "Setting speed to %d. Start rotator" % (max_speed))
+                            while speed < max_speed:
+                                pi.set_PWM_dutycycle(PWM, speed)
+                                speed += 5
+                                sleep(1/acc)
+                        # * GoTo
+                        elif cmd == 0x0408:
+                            rpm = data[3]
+                            acc = data[4]
+                            pos = (data[5] << 8) | data[6]
+                            log = "HOST:%s\tCMD:GoTo\tRPM:%d\tACC:%d\tPOS:%d" % (
+                                addr[0], rpm, acc, pos)
+                            logging.info(log)
+                            if options.verbose:
+                                print(log)
+
+                            if pi.read(BRAKE):
+                                logging.info("Disable safety break")
+                                pi.write(BRAKE, 0)
+
+                            logging.info(
+                                "Setting speed to 2.5 RPM. Start rotator")
+                            while True:
+                                if (speed > 70):
                                     speed -= 5
-                                    pi.set_PWM_dutycycle(PWM, speed)
-                                    sleep(0.1)
-                    # * Stop
-                    elif cmd == 0x0204:
-                        log = "HOST:%s\tCMD:Stop" % (addr[0])
-                        logging.info(log)
-                        if options.verbose:
-                            print(log)
+                                elif (speed < 65):
+                                    speed += 5
+                                else:
+                                    break
+                                pi.set_PWM_dutycycle(PWM, speed)
+                                sleep(.1)
 
-                        logging.info("Start Speed reduction")
-                        while speed > 5:
-                            speed -= 5
-                            pi.set_PWM_dutycycle(PWM, speed)
-                            sleep(1/acc)
-                        logging.info("Stop rotator")
-                        logging.info("Enable safety break")
-                        pi.write(BRAKE, 1)
+                            logging.info("Waiting for the required position")
+                            while (pos-options.shift) % 360 != abs_poss.value:
+                                sleep(.001)
+
+                            logging.info("Stop rotator")
+                            while speed > 0:
+                                speed -= 5
+                                pi.set_PWM_dutycycle(PWM, speed)
+                                sleep(.1)
+                            logging.info("Enable safety break")
+                            pi.write(BRAKE, 1)
+                        # * Update
+                        elif cmd == 0x0810:
+                            rpm = data[3]
+                            acc = data[4]
+                            log = "HOST:%s\tCMD:Update\tRPM:%d" % (
+                                addr[0], rpm)
+                            logging.info(log)
+                            if options.verbose:
+                                print(log)
+
+                            if pi.read(BRAKE):
+                                logging.info(
+                                    "The rotator does not move! Nothing to do")
+                            else:
+                                max_speed = int(rpm*23.18)
+                                if max_speed > speed:
+                                    logging.info(
+                                        "Increase speed to %d." % (max_speed))
+                                    while speed < max_speed:
+                                        pi.set_PWM_dutycycle(PWM, speed)
+                                        speed += 5
+                                        sleep(0.1)
+                                else:
+                                    logging.info(
+                                        "Reducing speed to %d." % (max_speed))
+                                    while speed > max_speed:
+                                        speed -= 5
+                                        pi.set_PWM_dutycycle(PWM, speed)
+                                        sleep(0.1)
+                        # * Stop
+                        elif cmd == 0x0204:
+                            log = "HOST:%s\tCMD:Stop" % (addr[0])
+                            logging.info(log)
+                            if options.verbose:
+                                print(log)
+
+                            logging.info("Start Speed reduction")
+                            while speed > 5:
+                                speed -= 5
+                                pi.set_PWM_dutycycle(PWM, speed)
+                                sleep(1/acc)
+                            logging.info("Stop rotator")
+                            logging.info("Enable safety break")
+                            pi.write(BRAKE, 1)
+                        else:
+                            log = "HOST:%s\tCMD:Unknow" % (addr[0])
+                            logging.info(log)
+                            if options.verbose:
+                                print(log)
                     else:
-                        log = "HOST:%s\tCMD:Unknow" % (addr[0])
+                        log = "HOST:%s\tError: Checksum failed" % (addr[0])
                         logging.info(log)
                         if options.verbose:
                             print(log)
-                else:
-                    log = "HOST:%s\tError: Checksum failed" % (addr[0])
-                    logging.info(log)
-                    if options.verbose:
-                        print(log)
-
+            except ConnectionResetError:
+                logging.error("Connection Reset Error")
+                pass
     except KeyboardInterrupt:
         logging.info("Exit APP")
         cmd_sock.close()
