@@ -115,7 +115,7 @@ def sensors(options, position, speed):
                 #         print("RPM {:.2f}\t POS:{:.2f}\t{:b} BAD READING!!!!".format(
                 #             rpm_f, pos_f, word))
 
-            sleep(.002)
+            sleep(.001)
     except:
         bcast_sock.close()
         tach.cancel()
