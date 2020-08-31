@@ -8,9 +8,10 @@
 
 while true; do
     cpu=$(</sys/class/thermal/thermal_zone0/temp)
+    gpu=$(/opt/vc/bin/vcgencmd measure_temp)
     echo "$(date) @ $(hostname)"
     echo "-------------------------------------------"
-    echo "GPU => $(/opt/vc/bin/vcgencmd measure_temp)"
+    echo "GPU => $(cut -d "=" -f2- <<< "$gpu")"
     echo "CPU => $((cpu/1000))'C"
     echo 
     echo 
