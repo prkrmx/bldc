@@ -176,3 +176,10 @@ fi
 # 	PermitRootLogin yes
 # /etc/init.d/ssh restart
 # sudo passwd root
+
+#  sudo vi /etc/dhcpcd.conf
+	# interface eth0
+	# static ip_address=10.9.9.40/8
+
+# sudo vi /etc/rc.local
+	# /home/pi/bldc/init.sh
