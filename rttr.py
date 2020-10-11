@@ -183,13 +183,19 @@ def main(options=None):
                 if len(data) > 7:
 
                     cksm = chks(data)
+                    apos = abs_poss.value.to_bytes(2, 'big')
+                    dddddd = abs_speed.value.to_bytes(2, 'big')
 
                     fbk = bytearray(8)
                     fbk[0] = 0xFF
                     fbk[1] = data[1]
                     fbk[2] = data[2]
+                    fbk[3] = apos[0]
+                    fbk[4] = apos[1]
+                    fbk[5] = dddddd[1]
                     fbk[7] = chks(fbk)
                     conn.send(fbk)
+                    
 
                     if cksm == data[7]:
                         cmd = (data[1] << 8) | data[2]
@@ -303,6 +309,12 @@ def main(options=None):
                             pi.set_PWM_dutycycle(PWM, speed)
                             logging.info("Enable safety break")
                             pi.write(BRAKE, 1)
+                        # * Get APOS
+                        elif cmd == 0x1020:
+                            log = "HOST:%s\tCMD:Get APOS" % (addr[0])
+                            logging.info(log)
+                            if options.verbose:
+                                print(log)
                         else:
                             log = "HOST:%s\tCMD:Unknow" % (addr[0])
                             logging.info(log)
@@ -313,6 +325,8 @@ def main(options=None):
                         logging.info(log)
                         if options.verbose:
                             print(log)
+
+
             except ConnectionResetError:
                 logging.error("Connection Reset Error")
                 pass
