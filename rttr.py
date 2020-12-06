@@ -7,6 +7,7 @@ import sys
 import logging
 import subprocess
 import pigpio
+import math
 
 from socket import *
 from time import sleep
@@ -92,13 +93,15 @@ def sensors(options, position, speed):
                 pos_f = (word >> 6)*360/1024
                 bit_parity = parity(word >> 1)
                 if ((word & 0x38) == 0x20) and ((word & 0x01) == bit_parity):
-                    pos_i = round(pos_f)
-                    rpm_i = round(rpm_f)
+                    # pos_i = round(pos_f)
+                    # rpm_i = round(rpm_f)
+                    pos_i = math.floor(pos_f)
+                    rpm_i = math.floor(rpm_f)
                     # if options.verbose:
                     #     print("RPM {:.2f}\t POS:{:.2f}\t{:b}".format(
                     #         rpm_f, pos_f, word))
-                    # if prev_pos != pos_i:
-                    if pos_i > prev_pos:
+                    if prev_pos != pos_i:
+                    # if pos_i > prev_pos:
                         if pos_i == 360:
                             pos_i = 0
                         prev_pos = pos_i
